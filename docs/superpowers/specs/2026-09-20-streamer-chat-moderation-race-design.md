@@ -212,7 +212,7 @@ Request body: `{ "text": "<comment text>" }`.
 Response: `Content-Type: text/event-stream`, one connection, events in this order per
 request:
 
-1. `event: init` — `{"engines": ["jev", "anthropic/claude-sonnet-5", "openai/gpt-5", "google/gemini-2.5-pro", "x-ai/grok-4.5"]}` — sent immediately, before any engine resolves, so the client knows the exact roster without hardcoding it.
+1. `event: init` — `{"engines": [{"id": "jev", "label": "JEV"}, {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5"}, ...]}` — sent immediately, before any engine resolves, so the client knows both the exact roster and its display labels without duplicating a label map on the frontend.
 2. `event: delta` — `{"engine": "<model-id>", "text": "<incremental chunk>"}` — zero or more, LLM engines only (JEV never emits `delta`).
 3. `event: verdict` — `{"engine": "<id>", "flagged": true|false|null, "confidence": number|null, "latencyMs": number, "costUsd": number, "inputTokens": number|null, "outputTokens": number|null}` — exactly one per engine that resolves.
 4. `event: error` — `{"engine": "<id>", "message": "<safe, human-readable message>"}` — instead of `verdict`, for an engine that failed or timed out.
