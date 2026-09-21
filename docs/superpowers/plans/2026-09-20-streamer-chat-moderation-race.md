@@ -309,11 +309,11 @@ import { calcJevCostUsd } from './cost'
 
 describe('calcJevCostUsd', () => {
   it('computes cost from input tokens at the published $42/1B rate', () => {
-    expect(calcJevCostUsd(1_000_000, 0)).toBeCloseTo(0.000042, 10)
+    expect(calcJevCostUsd(1_000_000, 0)).toBeCloseTo(0.042, 10)
   })
 
   it('applies the same rate to output tokens', () => {
-    expect(calcJevCostUsd(500_000, 500_000)).toBeCloseTo(0.000042, 10)
+    expect(calcJevCostUsd(500_000, 500_000)).toBeCloseTo(0.042, 10)
   })
 
   it('returns 0 for zero tokens', () => {
@@ -1868,6 +1868,9 @@ import { getLeaderboardStats } from '@/lib/db'
 import { deriveHeadline } from '@/lib/leaderboard-summary'
 import { getEngineLabel } from '@/lib/engines'
 
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 export default function LeaderboardPage() {
   const stats = getLeaderboardStats()
   const headlines = deriveHeadline(stats)
@@ -2000,6 +2003,7 @@ export function ChatBubble({ text, removed }: ChatBubbleProps) {
 
 ```tsx
 // src/components/EngineCard.tsx
+import { useEffect, useRef } from 'react'
 import { ChatBubble } from './ChatBubble'
 
 export interface EngineMessage {
@@ -2020,13 +2024,20 @@ export interface EngineCardProps {
 }
 
 export function EngineCard({ label, messages, status, elapsedMs, flagged, costUsd, errorMessage }: EngineCardProps) {
+  const messagesRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = messagesRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
+
   return (
     <section className="engine-card" data-status={status}>
       <header className="engine-card__header">
         <span className="engine-card__label">{label}</span>
         <span className="engine-card__timer">{(elapsedMs / 1000).toFixed(2)}s</span>
       </header>
-      <div className="engine-card__messages">
+      <div className="engine-card__messages" ref={messagesRef}>
         {messages.map((m) => (
           <ChatBubble key={m.id} text={m.text} removed={m.removed} />
         ))}
@@ -2047,6 +2058,14 @@ export function EngineCard({ label, messages, status, elapsedMs, flagged, costUs
 
 Run: `npm run test -- src/components/EngineCard.test.tsx`
 Expected: PASS (3 tests).
+
+Note: `EngineCard` auto-scrolls its message container to the bottom whenever `messages`
+changes (`useEffect` setting `scrollTop = scrollHeight`). Without this, a fixed-height
+pane leaves the newest message — including the one being raced — below the fold,
+which defeats the entire "watch it happen live" premise. This was found by manually
+running the app in a browser during Task 18, not by the unit tests (jsdom doesn't
+lay out real scroll geometry), and folded back into this task since it belongs to the
+component, not the page.
 
 - [ ] **Step 5: Commit**
 
@@ -2314,8 +2333,8 @@ git commit -m "feat: add synced ambient chat feed"
 - Test: `src/lib/useBroadcast.test.ts`
 
 **Interfaces:**
-- Consumes: `parseSseBuffer` (Task 5), `formatSseEvent` (Task 5, test-only), `DeltaPayload`, `ErrorPayload`, `InitPayload`, `VerdictPayload` (Task 1).
-- Produces: `EngineState { label: string; status: 'pending' | 'done' | 'error'; reasoningText: string; result?: VerdictPayload; errorMessage?: string }`, `useBroadcast(): { engines: Record<string, EngineState>; isSubmitting: boolean; submit: (text: string) => Promise<void> }` — used by Task 18 (main page).
+- Consumes: `parseSseBuffer` (Task 5), `formatSseEvent` (Task 5, test-only), `DeltaPayload`, `EngineInfo`, `ErrorPayload`, `InitPayload`, `VerdictPayload` (Task 1).
+- Produces: `EngineState { label: string; status: 'idle' | 'pending' | 'done' | 'error'; reasoningText: string; result?: VerdictPayload; errorMessage?: string }`, `useBroadcast(initialEngines?: EngineInfo[]): { engines: Record<string, EngineState>; isSubmitting: boolean; submit: (text: string) => Promise<void> }` — used by Task 18 (`RaceGrid`). `initialEngines` seeds `engines` in `'idle'` status immediately on mount (see Task 18 note) instead of leaving the grid empty until the first server round trip.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2411,18 +2430,22 @@ Expected: FAIL — module not found.
 
 import { useCallback, useState } from 'react'
 import { parseSseBuffer } from './parseSse'
-import type { DeltaPayload, ErrorPayload, InitPayload, VerdictPayload } from '@/types'
+import type { DeltaPayload, EngineInfo, ErrorPayload, InitPayload, VerdictPayload } from '@/types'
 
 export interface EngineState {
   label: string
-  status: 'pending' | 'done' | 'error'
+  status: 'idle' | 'pending' | 'done' | 'error'
   reasoningText: string
   result?: VerdictPayload
   errorMessage?: string
 }
 
-export function useBroadcast() {
-  const [engines, setEngines] = useState<Record<string, EngineState>>({})
+function toIdleState(engines: EngineInfo[]): Record<string, EngineState> {
+  return Object.fromEntries(engines.map((e) => [e.id, { label: e.label, status: 'idle' as const, reasoningText: '' }]))
+}
+
+export function useBroadcast(initialEngines: EngineInfo[] = []) {
+  const [engines, setEngines] = useState<Record<string, EngineState>>(() => toIdleState(initialEngines))
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const submit = useCallback(async (text: string) => {
@@ -2506,16 +2529,27 @@ git commit -m "feat: add client-side SSE consumption hook"
 ### Task 18: Main page assembly
 
 **Files:**
+- Create: `src/components/RaceGrid.tsx`
 - Modify: `src/app/page.tsx` (replace Task 1's placeholder)
 - Modify: `src/app/globals.css` (replace Task 1's minimal placeholder)
 
 **Interfaces:**
-- Consumes: `useAmbientFeed` (Task 16), `useBroadcast`, `EngineState` (Task 17), `EngineCard`, `EngineMessage` (Task 14), `CentralInput` (Task 15).
+- Consumes: `useAmbientFeed` (Task 16), `useBroadcast`, `EngineState` (Task 17), `EngineCard`, `EngineMessage` (Task 14), `CentralInput` (Task 15), `getAllEngines` (Task 4), `EngineInfo` (Task 1).
 
-- [ ] **Step 1: Replace `src/app/page.tsx`**
+**Design note — why `page.tsx` calls a Server Component into a Client Component:**
+`page.tsx` stays a Server Component so it can call `getAllEngines()` directly (no network
+round trip, no duplicated roster) and hand the real roster to `RaceGrid` as a prop.
+`RaceGrid` seeds `useBroadcast(initialEngines)` with that roster in `'idle'` status
+immediately on mount. Without this, `engines` starts as `{}` and the grid renders
+nothing — no panes, no ambient chat — until the first submission's `init` SSE event
+arrives, which contradicts "all the screens show positive comments always, like real
+chat" from the spec. This was caught by loading the page in an actual browser, not by
+any unit test (the component tests only ever render with props already populated).
+
+- [ ] **Step 1: Create `src/components/RaceGrid.tsx`**
 
 ```tsx
-// src/app/page.tsx
+// src/components/RaceGrid.tsx
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
@@ -2523,12 +2557,17 @@ import { useAmbientFeed } from '@/lib/useAmbientFeed'
 import { useBroadcast } from '@/lib/useBroadcast'
 import { EngineCard, type EngineMessage } from '@/components/EngineCard'
 import { CentralInput } from '@/components/CentralInput'
+import type { EngineInfo } from '@/types'
 
 const MAX_INPUT_LENGTH = Number(process.env.NEXT_PUBLIC_MAX_INPUT_LENGTH ?? '500')
 
-export default function HomePage() {
+export interface RaceGridProps {
+  initialEngines: EngineInfo[]
+}
+
+export function RaceGrid({ initialEngines }: RaceGridProps) {
   const ambient = useAmbientFeed()
-  const { engines, isSubmitting, submit } = useBroadcast()
+  const { engines, isSubmitting, submit } = useBroadcast(initialEngines)
   const [testMessage, setTestMessage] = useState<{ id: string; text: string } | null>(null)
   const [removedByEngine, setRemovedByEngine] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(0)
@@ -2595,7 +2634,19 @@ export default function HomePage() {
 }
 ```
 
-- [ ] **Step 2: Replace `src/app/globals.css`**
+- [ ] **Step 2: Replace `src/app/page.tsx`**
+
+```tsx
+// src/app/page.tsx
+import { getAllEngines } from '@/lib/engines'
+import { RaceGrid } from '@/components/RaceGrid'
+
+export default function HomePage() {
+  return <RaceGrid initialEngines={getAllEngines()} />
+}
+```
+
+- [ ] **Step 3: Replace `src/app/globals.css`**
 
 ```css
 /* src/app/globals.css */
@@ -2673,20 +2724,27 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #0f0f13; color
 }
 ```
 
-- [ ] **Step 3: Manually verify in a browser**
+- [ ] **Step 4: Manually verify in a browser**
 
 Run: `RACE_MOCK=1 DB_PATH=./data/dev.db npm run dev`, then open `http://localhost:3000`.
-Expected: 5 panes render (JEV + 4 baseline models), ambient messages appear on a timer identically across all panes. Type `you are so stupid` and submit: the message appears in all 5 panes at once; JEV's pane shows "Removed" and strikes the message almost immediately; the other panes show streaming reasoning text for longer before resolving. Type a benign message (e.g. `great stream today`) and confirm all panes show "Kept" and nothing is struck through. Confirm the input is disabled while a broadcast is in flight and re-enables after.
+Expected: all 5 panes (JEV + 4 baseline models) render immediately on load, already
+showing ambient messages ticking in identically across all of them — no submission
+needed to see chat activity. Type `you are so stupid` and submit: the message appears
+in all 5 panes at once; the pane auto-scrolls so it stays in view; JEV's pane shows
+"Removed" and strikes the message almost immediately; the other panes show streaming
+reasoning text for longer before resolving. Type a benign message (e.g. `great stream
+today`) and confirm all panes show "Kept" and nothing is struck through. Confirm the
+input is disabled while a broadcast is in flight and re-enables after.
 
-- [ ] **Step 4: Run the full test suite**
+- [ ] **Step 5: Run the full test suite**
 
 Run: `npm run test`
 Expected: all tests from Tasks 1–17 still pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/app/page.tsx src/app/globals.css
+git add src/app/page.tsx src/app/globals.css src/components/RaceGrid.tsx
 git commit -m "feat: assemble the 5-pane race grid and central input"
 ```
 
